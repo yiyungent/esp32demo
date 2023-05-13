@@ -29,18 +29,28 @@ void LEDDown()
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-void initWiFi()
+void LEDFlash(int count)
 {
-  LEDUp();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPassword);
-  Serial.print("Connecting to WiFi ..");
-  while (WiFi.status() != WL_CONNECTED)
+  int ledStatus = digitalRead(LED_BUILTIN);
+  for (int i = 0; i < count; i++)
   {
-    Serial.print('.');
-    delay(1000);
+    LEDUp();
+    // 阻塞延时 200ms
+    delay(200);
+    LEDDown();
+    delay(200);
   }
-  LEDDown();
+  digitalWrite(LED_BUILTIN, ledStatus);
+}
+
+/// @brief WiFi 连接事件
+/// @param event
+/// @param info
+void WiFiStationConnected(arduino_event_id_t event, arduino_event_info_t info)
+{
+  Serial.println("Connected to WiFi(AP) successfully!");
+  // LEDFlash(3);
+  LEDFlash(5);
   Serial.println("Connected to WiFi");
   Serial.print("WiFi.localIP: ");
   Serial.println(WiFi.localIP());
@@ -48,11 +58,42 @@ void initWiFi()
   Serial.println(WiFi.RSSI());
 }
 
+/// @brief WiFi 断开连接事件
+/// @param event
+/// @param info
+void WiFiStationDisconnected(arduino_event_id_t event, arduino_event_info_t info)
+{
+  Serial.println("Disconnected from WiFi access point");
+  // 注意: 断开时不要闪灯, 因为 loop 内重连会不停断开
+  // LEDFlash(5);
+  Serial.print("WiFi lost connection. Reason: ");
+  Serial.println(info.wifi_sta_disconnected.reason);
+  Serial.println("Trying to Reconnect");
+}
+
+/// @brief 启动时初始化 WiFi
+void initWiFi()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.onEvent(WiFiStationConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
+  WiFi.onEvent(WiFiStationDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  WiFi.begin(wifiSsid, wifiPassword);
+  Serial.print("Connecting to WiFi ..");
+  int i = 0;
+  // 启动时 尝试 5 次连接 WiFi, 若超过次数则放弃
+  while (WiFi.status() != WL_CONNECTED && i < 5)
+  {
+    Serial.print('.');
+    delay(1000);
+    i++;
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
   Serial.println("setup");
-  
+
   // 设置 GPIO 4 的模式为: 输出模式
   pinMode(LED_BUILTIN, OUTPUT);
 
@@ -68,20 +109,13 @@ void loop()
   // 定时重连
   if ((WiFi.status() != WL_CONNECTED) && (currentMillis - previousMillis >= interval))
   {
-    LEDUp();
     Serial.print(millis());
     Serial.println("Reconnecting to WiFi...");
     WiFi.disconnect();
     WiFi.reconnect();
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      LEDDown();
-      Serial.print("WiFi.localIP: ");
-      Serial.println(WiFi.localIP());
-    }
     previousMillis = currentMillis;
   }
 #pragma endregion
 
-
+  // TODO: 其它业务
 }
