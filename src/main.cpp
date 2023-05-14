@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include "vars.h"
 
 #pragma region camera
 
@@ -57,19 +58,29 @@
 
 #include "camera_pins.h"
 
-int capture_interval = 5 * 1000;                      // 默认20秒上传一次，可更改（本项目是自动上传，如需条件触发上传，在需要上传的时候，调用take_send_photo()即可）
-const char *uid = ""; // 用户私钥，巴法云控制台获取
-const char *topic = "esp32camimages";                      // 主题名字，可在控制台新建
-const char *wechatMsg = "";                           // 如果不为空，会推送到微信，可随意修改，修改为自己需要发送的消息
-const char *wecomMsg = "";                            // 如果不为空，会推送到企业微信，推送到企业微信的消息，可随意修改，修改为自己需要发送的消息
-const char *urlPath = "";                             // 如果不为空，会生成自定义图片链接，自定义图片上传后返回的图片url，url前一部分为巴法云域名，第二部分：私钥+主题名的md5值，第三部分为设置的图片链接值。
-bool flashRequired = false;                           // 闪光灯，true是打开闪光灯
-const int brightLED = 4;                              // 默认闪光灯引脚
+int capture_interval = CAPTURE_INTERVAL;       // 默认5分钟上传一次，可更改（本项目是自动上传，如需条件触发上传，在需要上传的时候，调用take_send_photo()即可）
+const char *bemfa_uid = BEMFA_UID;     // 用户私钥，巴法云控制台获取
+const char *bemfa_topic = BEMFA_TOPIC; // 主题名字，可在控制台新建
+const char *wechatMsg = "";            // 如果不为空，会推送到微信，可随意修改，修改为自己需要发送的消息
+const char *wecomMsg = "";             // 如果不为空，会推送到企业微信，推送到企业微信的消息，可随意修改，修改为自己需要发送的消息
+const char *urlPath = "";              // 如果不为空，会生成自定义图片链接，自定义图片上传后返回的图片url，url前一部分为巴法云域名，第二部分：私钥+主题名的md5值，第三部分为设置的图片链接值。
+bool flashRequired = false;            // 闪光灯，true是打开闪光灯
+const int brightLED = 4;               // 默认闪光灯引脚
 
 /********************************************************/
 
-const char *post_url = "http://images.bemfa.com/upload/v1/upimages.php"; // 默认上传地址
-static String httpResponseString;                                        // 接收服务器返回信息
+#pragma region mail
+#include <ESP_Mail_Client.h>
+
+/* Declare the global used SMTPSession object for SMTP transport */
+SMTPSession smtp;
+
+/* Callback function to get the Email sending status */
+void smtpCallback(SMTP_Status status);
+#pragma endregion
+
+const char *bemfa_post_url = BEMFA_POST_URL; // 默认上传地址
+static String httpResponseString;            // 接收服务器返回信息
 bool internet_connected = false;
 long current_millis;
 long last_capture_millis = 0;
@@ -101,8 +112,8 @@ void setupFlashPWM()
 #pragma region base
 #define LED_BUILTIN 4
 
-const char *wifiSsid = "ffjfifjfjfjfjfjf";
-const char *wifiPassword = "";
+const char *wifiSsid = WIFI_SSID;
+const char *wifiPassword = WIFI_PASSWORD;
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
 
@@ -290,6 +301,22 @@ void setup()
 #endif
   setupFlashPWM(); // configure PWM for the illumination LED
 #pragma endregion
+
+#pragma region mail
+  /*  Set the network reconnection option */
+  MailClient.networkReconnect(true);
+
+  /** Enable the debug via Serial port
+   * 0 for no debugging
+   * 1 for basic level debugging
+   *
+   * Debug port can be changed via ESP_MAIL_DEFAULT_DEBUG_PORT in ESP_Mail_FS.h
+   */
+  smtp.debug(1);
+
+  /* Set the callback function to get the sending results */
+  smtp.callback(smtpCallback);
+#pragma endregion
 }
 
 #pragma region camera
@@ -323,17 +350,18 @@ static esp_err_t take_send_photo()
     return ESP_FAIL;
   }
 
+#pragma region http send 巴法云
   httpResponseString = "";
   esp_http_client_handle_t http_client;
   esp_http_client_config_t config_client = {0};
-  config_client.url = post_url;
+  config_client.url = bemfa_post_url;
   config_client.event_handler = _http_event_handler;
   config_client.method = HTTP_METHOD_POST;
   http_client = esp_http_client_init(&config_client);
   esp_http_client_set_post_field(http_client, (const char *)fb->buf, fb->len); // 设置http发送的内容和长度
   esp_http_client_set_header(http_client, "Content-Type", "image/jpg");        // 设置http头部字段
-  esp_http_client_set_header(http_client, "Authorization", uid);               // 设置http头部字段
-  esp_http_client_set_header(http_client, "Authtopic", topic);                 // 设置http头部字段
+  esp_http_client_set_header(http_client, "Authorization", bemfa_uid);         // 设置http头部字段
+  esp_http_client_set_header(http_client, "Authtopic", bemfa_topic);           // 设置http头部字段
   esp_http_client_set_header(http_client, "wechatmsg", wechatMsg);             // 设置http头部字段
   esp_http_client_set_header(http_client, "wecommsg", wecomMsg);               // 设置http头部字段
   esp_http_client_set_header(http_client, "picpath", urlPath);                 // 设置http头部字段
@@ -353,9 +381,115 @@ static esp_err_t take_send_photo()
     Serial.println(url); // 打印获取的URL
   }
 
+  // Serial.println("Taking picture END");
+  // esp_camera_fb_return(fb);
+  esp_http_client_cleanup(http_client);
+#pragma endregion
+
+#pragma region send mail
+  /* Declare the Session_Config for user defined session credentials */
+  Session_Config config;
+
+  /* Set the session config */
+  config.server.host_name = SMTP_HOST;
+  config.server.port = SMTP_PORT;
+  config.login.email = AUTHOR_EMAIL;
+  config.login.password = AUTHOR_PASSWORD;
+
+  /** Assign your host name or you public IPv4 or IPv6 only
+   * as this is the part of EHLO/HELO command to identify the client system
+   * to prevent connection rejection.
+   * If host name or public IP is not available, ignore this or
+   * use generic host "mydomain.net".
+   *
+   * Assign any text to this option may cause the connection rejection.
+   */
+  config.login.user_domain = F("mydomain.net");
+
+  /* Set the NTP config time */
+  config.time.ntp_server = F("pool.ntp.org,time.nist.gov");
+  config.time.gmt_offset = 3;
+  config.time.day_light_offset = 0;
+
+  /* Declare the message class */
+  SMTP_Message message;
+
+  /* Enable the chunked data transfer with pipelining for large message if server supported */
+  message.enable.chunking = true;
+
+  /* Set the message headers */
+  message.sender.name = F("ESP Mail");
+  message.sender.email = AUTHOR_EMAIL;
+
+  message.subject = F("Take photo from ESP32-CAM");
+  message.addRecipient(F("user1"), RECIPIENT_EMAIL);
+
+  message.html.content = F("<span style=\"color:#ff0000;\">The camera image.</span><br/><br/><img src=\"cid:image-001\" alt=\"esp32 cam image\"  width=\"2048\" height=\"1536\">");
+
+  /** The content transfer encoding e.g.
+   * enc_7bit or "7bit" (not encoded)
+   * enc_qp or "quoted-printable" (encoded) <- not supported for message from blob and file
+   * enc_base64 or "base64" (encoded)
+   * enc_binary or "binary" (not encoded)
+   * enc_8bit or "8bit" (not encoded)
+   * The default value is "7bit"
+   */
+  message.html.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+
+  /** The HTML text message character set e.g.
+   * us-ascii
+   * utf-8
+   * utf-7
+   * The default value is utf-8
+   */
+  message.html.charSet = F("utf-8");
+
+  // camera_fb_t *fb = esp_camera_fb_get();
+
+  SMTP_Attachment att;
+
+  /** Set the inline image info e.g.
+   * file name, MIME type, file path, file storage type,
+   * transfer encoding and content encoding
+   */
+  att.descr.filename = F("camera.jpg");
+  att.descr.mime = F("image/jpg");
+
+  att.blob.data = fb->buf;
+  att.blob.size = fb->len;
+
+  att.descr.content_id = F("image-001"); // The content id (cid) of camera.jpg image in the src tag
+
+  /* Need to be base64 transfer encoding for inline image */
+  att.descr.transfer_encoding = Content_Transfer_Encoding::enc_base64;
+
+  /* Add inline image to the message */
+  message.addInlineImage(att);
+
+  /* Connect to the server */
+  if (!smtp.connect(&config))
+  {
+    ESP_MAIL_PRINTF("Connection error, Status Code: %d, Error Code: %d, Reason: %s", smtp.statusCode(), smtp.errorCode(), smtp.errorReason().c_str());
+    return ESP_FAIL;
+  }
+
+  if (smtp.isAuthenticated())
+    Serial.println("\nSuccessfully logged in.");
+  else
+    Serial.println("\nConnected with no Auth.");
+
+  /* Start sending the Email and close the session */
+  if (!MailClient.sendMail(&smtp, &message, true))
+    ESP_MAIL_PRINTF("Error, Status Code: %d, Error Code: %d, Reason: %s", smtp.statusCode(), smtp.errorCode(), smtp.errorReason().c_str());
+
+  // to clear sending result log
+  // smtp.sendingResult.clear();
+
+  ESP_MAIL_PRINTF("Free Heap: %d\n", MailClient.getFreeHeap());
+#pragma endregion
+
   Serial.println("Taking picture END");
   esp_camera_fb_return(fb);
-  esp_http_client_cleanup(http_client);
 
   return res;
 }
@@ -388,4 +522,45 @@ void loop()
     take_send_photo();
   }
 #pragma endregion
+}
+
+/* Callback function to get the Email sending status */
+void smtpCallback(SMTP_Status status)
+{
+  /* Print the current status */
+  Serial.println(status.info());
+
+  /* Print the sending result */
+  if (status.success())
+  {
+    // ESP_MAIL_PRINTF used in the examples is for format printing via debug Serial port
+    // that works for all supported Arduino platform SDKs e.g. AVR, SAMD, ESP32 and ESP8266.
+    // In ESP8266 and ESP32, you can use Serial.printf directly.
+
+    Serial.println("----------------");
+    ESP_MAIL_PRINTF("Message sent success: %d\n", status.completedCount());
+    ESP_MAIL_PRINTF("Message sent failed: %d\n", status.failedCount());
+    Serial.println("----------------\n");
+
+    for (size_t i = 0; i < smtp.sendingResult.size(); i++)
+    {
+      /* Get the result item */
+      SMTP_Result result = smtp.sendingResult.getItem(i);
+
+      // In case, ESP32, ESP8266 and SAMD device, the timestamp get from result.timestamp should be valid if
+      // your device time was synched with NTP server.
+      // Other devices may show invalid timestamp as the device time was not set i.e. it will show Jan 1, 1970.
+      // You can call smtp.setSystemTime(xxx) to set device time manually. Where xxx is timestamp (seconds since Jan 1, 1970)
+
+      ESP_MAIL_PRINTF("Message No: %d\n", i + 1);
+      ESP_MAIL_PRINTF("Status: %s\n", result.completed ? "success" : "failed");
+      ESP_MAIL_PRINTF("Date/Time: %s\n", MailClient.Time.getDateTimeString(result.timestamp, "%B %d, %Y %H:%M:%S").c_str());
+      ESP_MAIL_PRINTF("Recipient: %s\n", result.recipients.c_str());
+      ESP_MAIL_PRINTF("Subject: %s\n", result.subject.c_str());
+    }
+    Serial.println("----------------\n");
+
+    // You need to clear sending result as the memory usage will grow up.
+    smtp.sendingResult.clear();
+  }
 }
