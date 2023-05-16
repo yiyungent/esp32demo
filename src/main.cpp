@@ -58,14 +58,14 @@
 
 #include "camera_pins.h"
 
-int capture_interval = CAPTURE_INTERVAL;       // 默认5分钟上传一次，可更改（本项目是自动上传，如需条件触发上传，在需要上传的时候，调用take_send_photo()即可）
-const char *bemfa_uid = BEMFA_UID;     // 用户私钥，巴法云控制台获取
-const char *bemfa_topic = BEMFA_TOPIC; // 主题名字，可在控制台新建
-const char *wechatMsg = "";            // 如果不为空，会推送到微信，可随意修改，修改为自己需要发送的消息
-const char *wecomMsg = "";             // 如果不为空，会推送到企业微信，推送到企业微信的消息，可随意修改，修改为自己需要发送的消息
-const char *urlPath = "";              // 如果不为空，会生成自定义图片链接，自定义图片上传后返回的图片url，url前一部分为巴法云域名，第二部分：私钥+主题名的md5值，第三部分为设置的图片链接值。
-bool flashRequired = false;            // 闪光灯，true是打开闪光灯
-const int brightLED = 4;               // 默认闪光灯引脚
+int capture_interval = CAPTURE_INTERVAL; // 默认5分钟上传一次，可更改（本项目是自动上传，如需条件触发上传，在需要上传的时候，调用take_send_photo()即可）
+const char *bemfa_uid = BEMFA_UID;       // 用户私钥，巴法云控制台获取
+const char *bemfa_topic = BEMFA_TOPIC;   // 主题名字，可在控制台新建
+const char *wechatMsg = "";              // 如果不为空，会推送到微信，可随意修改，修改为自己需要发送的消息
+const char *wecomMsg = "";               // 如果不为空，会推送到企业微信，推送到企业微信的消息，可随意修改，修改为自己需要发送的消息
+const char *urlPath = "";                // 如果不为空，会生成自定义图片链接，自定义图片上传后返回的图片url，url前一部分为巴法云域名，第二部分：私钥+主题名的md5值，第三部分为设置的图片链接值。
+bool flashRequired = false;              // 闪光灯，true是打开闪光灯
+const int brightLED = 4;                 // 默认闪光灯引脚
 
 /********************************************************/
 
@@ -82,7 +82,7 @@ void smtpCallback(SMTP_Status status);
 const char *bemfa_post_url = BEMFA_POST_URL; // 默认上传地址
 static String httpResponseString;            // 接收服务器返回信息
 bool internet_connected = false;
-long current_millis;
+long current_millis_camera;
 long last_capture_millis = 0;
 
 // Bright LED (Flash)
@@ -114,7 +114,7 @@ void setupFlashPWM()
 
 const char *wifiSsid = WIFI_SSID;
 const char *wifiPassword = WIFI_PASSWORD;
-unsigned long previousMillis = 0;
+unsigned long previous_millis_wifi = 0;
 unsigned long interval = 30000;
 
 const char *mqttServer = "your_MQTT_server";
@@ -155,6 +155,7 @@ void LEDFlash(int count)
 #pragma endregion
 
 #pragma region WiFi
+
 /// @brief WiFi 连接事件
 /// @param event
 /// @param info
@@ -304,7 +305,8 @@ void setup()
 
 #pragma region mail
   /*  Set the network reconnection option */
-  MailClient.networkReconnect(true);
+  // MailClient.networkReconnect(true);
+  MailClient.networkReconnect(false);
 
   /** Enable the debug via Serial port
    * 0 for no debugging
@@ -500,28 +502,32 @@ void loop()
   Serial.println("loop");
 
 #pragma region 定时重连 WiFi
-  unsigned long currentMillis = millis();
+  unsigned long current_millis_wifi = millis();
   // 定时重连
-  if ((WiFi.status() != WL_CONNECTED) && (currentMillis - previousMillis >= interval))
+  if ((WiFi.status() != WL_CONNECTED) && (current_millis_wifi - previous_millis_wifi >= interval))
   {
     Serial.print(millis());
     Serial.println("Reconnecting to WiFi...");
     WiFi.disconnect();
     WiFi.reconnect();
-    previousMillis = currentMillis;
+    previous_millis_wifi = current_millis_wifi;
   }
 #pragma endregion
 
-// TODO: 其它业务
+  // TODO: 其它业务
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    // 需要网络的任务
 #pragma region camera
-  // 定时拍照发送
-  current_millis = millis();
-  if (current_millis - last_capture_millis > capture_interval)
-  { // Take another picture
-    last_capture_millis = millis();
-    take_send_photo();
-  }
+    // 定时拍照发送
+    current_millis_camera = millis();
+    if (current_millis_camera - last_capture_millis > capture_interval)
+    { // Take another picture
+      last_capture_millis = millis();
+      take_send_photo();
+    }
 #pragma endregion
+  }
 }
 
 /* Callback function to get the Email sending status */
